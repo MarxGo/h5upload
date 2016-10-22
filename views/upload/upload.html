@@ -1,0 +1,282 @@
+<!DOCTYPE html5>
+<html>
+
+<head>
+    <title>file upload demo</title>
+</head>
+
+<body>
+    <h1>This project will auto upload file to server when input change</h1>
+    <input id="file-select" type="file" name="file" onchange="isFileExistInServer(this.files)" />
+    <br />
+    <br />
+    <br />
+    <br />
+    <textarea id="output" style="outline:none;resize:none;height:300px;width:900px" disabled="disabled">运行日志</textarea>
+
+    <script type="text/javascript" src="../static/js/md5.js"></script>
+    <script type="text/javascript" src="../static/js/util.js"></script>
+	<script type="text/javascript">
+
+    // every file block's size, default is 1M.
+    var FILE_BLOCK_SIZE = 1 * 1024 * 1024;
+    // file id == md5(file_content)
+    var FILE_ID = "";
+    // worker number to do upload, default is 3.
+    var WORKER_NUMBER = 3;
+    // worker array
+    var WORKERS = [];
+    // all work list
+    var WORK_LIST = {};
+
+    // isFileExistInServer is check file is already exist in server
+    function isFileExistInServer(files) {
+        if (files.length < 1) {
+            return;
+        }
+
+        output("file changed,start upload file:"+files[0].name);
+        output("file size:"+files[0].size)+"b";
+        WORKERS = [];
+        WORK_LIST = {};
+
+        var exist = false;
+        var reader = new FileReader();
+        reader.onload = function (){
+            FILE_ID = md5(reader.result);
+            output("file's md5 is:"+FILE_ID);
+
+            var tempFileInfo = {};
+            tempFileInfo.id = FILE_ID;
+            infoStr = JSON.stringify(tempFileInfo);
+
+            this.url = "/upload/checkFileExist";
+            var httpRequest = new XMLHttpRequest();
+            this.http =  httpRequest;
+
+            this.http.addEventListener("load", function() {
+                var result = JSON.parse(httpRequest.responseText);
+                if (!result.isExist) {
+                    output("file:" + files[0].name + "is not exist in server, start upload!")
+                    doUpload(files);
+                } else {
+                    output("file:" + files[0].name + "is already exist, don't upload!")
+                }
+            });
+
+            this.http.open("POST", this.url,false);
+            this.http.send(infoStr);
+        }
+
+        reader.readAsText(files[0],0,files[0].size);
+    }
+
+    function doUpload(fileList) {
+        // 1. get every file's size and notify server to get each file block size and worker number
+        getBlockSizeAndWorkerNum(fileList);
+
+        // 2. generate work
+        generateWork(fileList);
+
+        // 3. generate worker
+        generateWorker();
+
+        // 4. allocating work
+        allocatingWork();
+        output("allocationg work done!");
+        output("start upload ...");
+
+        // 5. do upload work
+        startWork();
+    }
+
+    function getBlockSizeAndWorkerNum(files) {
+        var fileInfos = [];
+
+        var tempFileInfo = {};
+        tempFileInfo.size = files[0].size;
+
+        fileInfos.push(tempFileInfo);
+
+        var filesInfo = {};
+        filesInfo.fileNum = files.length;
+        filesInfo.fileInfos = fileInfos;
+        infoStr = JSON.stringify(filesInfo);
+
+        this.url = "/upload/getBlockSizeAndWorkerNum";
+        var httpRequest = new XMLHttpRequest();
+        this.http =  httpRequest;
+
+        this.http.addEventListener("load", function() {
+            var result = JSON.parse(httpRequest.responseText);
+            WORKER_NUMBER = result.workerNum;
+            FILE_BLOCK_SIZE = result.fileSize;
+            output("file:"+files[0].name+" will have "+WORKER_NUMBER + "(s) to upload at same time,each time file block's size is:"+FILE_BLOCK_SIZE);
+        });
+
+        this.http.open("POST", this.url,false);
+        this.http.send(infoStr);
+    }
+
+    function generateWork(fileList) {
+        WORK_LIST.works = [];
+        for (var i = 0; i < fileList.length; i ++) {
+            var tempFile = fileList[i];
+
+            if (tempFile.size > FILE_BLOCK_SIZE) {
+                var blockNum = Math.ceil(tempFile.size/FILE_BLOCK_SIZE);
+
+                for (var j = 0; j < blockNum; j ++) {
+                    var startIndex = j * FILE_BLOCK_SIZE;
+                    var endIndex = startIndex + FILE_BLOCK_SIZE;
+                    if (endIndex > tempFile.size) {
+                        endIndex = tempFile.size
+                    }
+
+                    var work = {
+                        id: i+":"+j,
+                        blockId: "",
+                        file: tempFile,
+                        isBlock: true,
+                        startIndex: startIndex,
+                        endIndex: endIndex,
+                        currentBlock: j,
+                        sumBlock: blockNum
+                    };
+
+                    WORK_LIST.works.push(work);
+                }
+            }
+        }
+    }
+
+    function generateWorker() {
+        for (var i = 0; i < WORKER_NUMBER; i ++) {
+            tempWorker = new Worker("work"+i, "/upload/receiveFile","/upload/checkFileBlockExist","/upload/empty");
+            WORKERS.push(tempWorker);
+        }
+    }
+
+    function Worker(workerName, uploadUrl, checkBlockExistUrl, emptyUrl) {
+        this.name = workerName;
+        this.state = 0;
+
+        this.workList = [];
+        this.currentWorkIndex = 0;
+
+        this.uploadUrl = uploadUrl;
+        this.checkBlockExistUrl = checkBlockExistUrl;
+        this.emptyUrl = emptyUrl;
+        this.uploadBlockReq = new XMLHttpRequest();
+        this.checkBlockExistReq = new XMLHttpRequest();
+
+        this.setWork = function(workList) {
+            this.workList = workList;
+        }
+
+        this.startWork = function(worker) {
+            worker.uploadBlockReq.addEventListener("load", function() {
+                var work = worker.workList[worker.currentWorkIndex];
+                if (work) {
+                    worker.getBlockInfoAndUpload(worker,work);
+                } else {
+                    console.log("worker:", worker.name, " all job done ...");
+                    output("worker:" + worker.name + " all job done ...");
+                    worker.state = 1;
+                }
+            });
+
+            var work = worker.workList[worker.currentWorkIndex];
+            if (work) {
+                worker.getBlockInfoAndUpload(worker,work);
+            } else {
+                console.log("worker:", worker.name, "don't have job ...");
+                output("worker:" + worker.name + "don't have job ...");
+                worker.state = 1;
+            }
+        }
+
+        this.getBlockInfoAndUpload = function(worker, work) {
+            var reader = new FileReader();
+            reader.onload = function() {
+                // send check block exist func and if not exist upload it
+                blockId = md5(reader.result);
+                work.blockId = blockId;
+
+                var tempFileBlockInfo = {};
+                tempFileBlockInfo.id = FILE_ID;
+                tempFileBlockInfo.blockId = blockId;
+                tempFileBlockInfo.blockCount = work.currentBlock;
+                infoStr = JSON.stringify(tempFileBlockInfo);
+
+                this.url = worker.checkBlockExistUrl;
+                var httpRequest = new XMLHttpRequest();
+                this.http =  httpRequest;
+
+                this.http.addEventListener("load", function() {
+                    var result = JSON.parse(httpRequest.responseText);
+                    if (result.isExist) {
+                        worker.sendEmptyReq(worker,work);
+                    } else {
+                        worker.sendFileToServer(worker,work);
+                    }
+                    worker.currentWorkIndex++;
+                });
+
+                this.http.open("POST", this.url,false);
+                this.http.send(infoStr);
+            }
+
+            reader.readAsText(getFileSlice(work.file, work.startIndex, work.endIndex))
+        }
+
+        this.sendEmptyReq = function(worker, work) {
+            console.log(worker.name, " got a file block that server already exist ", worker.currentWorkIndex, "(", work.blockId, ")")
+            output(worker.name + " got a file block that server already exist " + worker.currentWorkIndex + "(" + work.blockId + ")")
+            worker.uploadBlockReq.open("POST", worker.emptyUrl);
+            worker.uploadBlockReq.send(worker.generateUploadData(work,work.blockId));
+        }
+
+        this.sendFileToServer = function(worker, work) {
+            console.log(worker.name, " start work ", worker.currentWorkIndex, "(", work.blockId, ")");
+            output(worker.name + " start work " + worker.currentWorkIndex + "(" + work.blockId + ")");
+
+            worker.uploadBlockReq.open("POST", worker.uploadUrl);
+            worker.uploadBlockReq.send(worker.generateUploadData(work,work.blockId));
+        }
+
+        this.generateUploadData = function(workInfo,blockId) {
+            var file = workInfo.file;
+            var formData = new FormData();
+            formData.append("fileName", file.name);
+            formData.append("fileSize", file.size);
+            formData.append("fileId",FILE_ID);
+            var isBlock = workInfo.isBlock;
+            if (isBlock) {
+                formData.append("blockId",blockId);
+                formData.append("data", getFileSlice(file, workInfo.startIndex, workInfo.endIndex));
+                formData.append("currentBlock", workInfo.currentBlock);
+                formData.append("sumBlock", workInfo.sumBlock);
+            } else {
+                formData.append("data", file);
+            }
+            return formData;
+        }
+    }
+
+    function allocatingWork() {
+        for (var i = 0; i < WORK_LIST.works.length; i ++) {
+            var work = WORK_LIST.works[i];
+            WORKERS[i % WORKER_NUMBER].workList.push(work);
+        }
+    }
+
+    function startWork() {
+        for (var i = 0; i < WORKERS.length; i ++) {
+            var worker = WORKERS[i];
+            worker.startWork(worker);            
+        }
+    }
+    </script>
+</body>
+</html>
