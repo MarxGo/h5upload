@@ -17,9 +17,5 @@ func init() {
 		beego.NSRouter("/empty", &controllers.UploadController{}, "post:Empty"),
 	)
 
-	treeNS := beego.NewNamespace("/tree",
-		beego.NSRouter("/to", &controllers.TreeController{}, "get:ToTree"))
-
 	beego.AddNamespace(uploadNS)
-	beego.AddNamespace(treeNS)
 }
