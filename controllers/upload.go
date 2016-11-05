@@ -5,7 +5,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/MarxGo/h5demo/util"
+	"github.com/MarxGo/h5upload/util"
 
 	"github.com/astaxie/beego"
 )

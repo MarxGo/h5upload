@@ -200,6 +200,8 @@
             var reader = new FileReader();
             reader.onload = function() {
                 // send check block exist func and if not exist upload it
+                output(worker.name ,"'s current block file context is ===>",reader.result);
+                console.log(reader.result);
                 blockId = md5(reader.result);
                 work.blockId = blockId;
 

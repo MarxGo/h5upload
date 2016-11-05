@@ -1,7 +1,7 @@
 package routers
 
 import (
-	"github.com/MarxGo/h5demo/controllers"
+	"github.com/MarxGo/h5upload/controllers"
 	"github.com/astaxie/beego"
 )
 
